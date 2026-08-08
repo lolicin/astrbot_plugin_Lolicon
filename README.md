@@ -44,6 +44,7 @@ git clone https://github.com/lolicin/astrbot_plugin_lolicon
 | `exclude_ai` | bool | `true` | 排除 AI 生成图（仅 lolicon） |
 | `aspect_ratio` | string | `gt1` | 宽高比：留空/`gt1`/`lt1`/`eq1`（仅 lolicon） |
 | `max_count` | int | `5` | 单次最大图片数（1-10），支持中文数字 |
+| `multi_tag_mode` | string | `ignore_tag` | 多图带标签时：`ignore_tag`(忽略标签走缓存)/`fetch_by_tag`(按标签实时下载) |
 | `max_image_bytes` | int | `10485760` | 图片压缩字节阈值，超过则压缩；0=不压缩；默认 10MB |
 | `tag_alias` | text | `""` | 标签别名映射，逗号或换行分隔，格式 `白丝=white_pantyhose` |
 | `cache_size` | int | `10` | 缓存池目标数量 |
@@ -65,7 +66,12 @@ git clone https://github.com/lolicin/astrbot_plugin_lolicon
 机器人：[图片] 给你涩图~ x1
 
 用户：来三份白丝涩图
-机器人：[图片] 带标签搜索仅支持单图，已发送 1 张
+机器人：[图片][图片][图片] 多图已忽略标签，走本地缓存（更快）
+（multi_tag_mode=ignore_tag 时，默认）
+
+用户：来三份白丝涩图
+机器人：[图片][图片][图片] 给你涩图~ x3
+（multi_tag_mode=fetch_by_tag 时）
 
 用户：来9份萝莉色图
 机器人：一次最多 5 张哦
@@ -76,8 +82,8 @@ git clone https://github.com/lolicin/astrbot_plugin_lolicon
 
 - 数量支持中文数字（一二三...十、十三）和阿拉伯数字，量词支持 份/个/张/片
 - 标签按空格/逗号/顿号分隔，经 `tag_alias` 别名映射后传给 Lolicon API
-- **带标签仅支持单图**：库存是随机补的，无法预知用户下一个标签，多图带标签会很慢；带标签时走实时下载且仅发 1 张
-- 无标签时从本地缓存取（快，支持多图），有标签时实时按标签下载（精准，仅单图）
+- **多图带标签的处理**（`multi_tag_mode` 配置）：`ignore_tag`=忽略标签走本地缓存（快，图可能不符标签）；`fetch_by_tag`=按标签实时下载多张（慢，图符合标签）。默认 `ignore_tag`
+- 无标签时从本地缓存取（快，支持多图）；单图带标签时实时按标签下载（精准）
 - 若想还原原版"必须完整输入 我要涩涩 才触发"的行为：`match_mode=exact`、`trigger_words=["我要色色","我要色图","我要涩涩"]`、`reply_style=playful`
 
 ## 配置要求

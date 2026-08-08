@@ -58,6 +58,13 @@
     "default": 5,
     "hint": "单次请求最多返回的图片数量（1-10），超过会提示。支持中文数字（来三份=3）"
   },
+  "multi_tag_mode": {
+    "description": "多图带标签时的处理方式",
+    "type": "string",
+    "default": "ignore_tag",
+    "options": ["ignore_tag", "fetch_by_tag"],
+    "hint": "请求多张且带标签时：ignore_tag=忽略标签走本地缓存（快，图可能不符标签）；fetch_by_tag=按标签实时下载多张（慢，图符合标签）"
+  },
   "max_image_bytes": {
     "description": "图片压缩阈值（字节）",
     "type": "int",

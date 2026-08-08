@@ -404,10 +404,9 @@ class ImageManager:
         return '.jpg'
 
     async def acquire_images(self, num: int, tags: list):
-        """获取图片路径：有标签走 lolicon 实时下载（仅单图），无标签走缓存+补。"""
+        """获取图片路径：有标签走 lolicon 实时下载，无标签走缓存+补。"""
         if tags:
-            # 带标签仅支持单图实时下载（库存随机补，无法预知用户标签，多图会很慢）
-            return await self.download_with_tags(1, tags)
+            return await self.download_with_tags(num, tags)
         images = []
         cached = await self.get_image_list()
         random.shuffle(cached)
@@ -560,7 +559,7 @@ class LoliconPlugin(Star):
             "max_count_exceeded": "这么多你吃得消吗，最多 {max_count} 张",
             "rate_limited": "急什么，等一下再试",
             "fetch_timeout": "信号太差没找到涩涩",
-            "tag_single_only": "带标签只能来一张哦",
+            "tag_ignored": "太多了顾不上标签啦",
         }
         plain = {
             "cache_empty": "库存为空，正在补货，请稍后再试",
@@ -571,7 +570,7 @@ class LoliconPlugin(Star):
             "max_count_exceeded": "一次最多 {max_count} 张哦",
             "rate_limited": "你太快啦，等一下再试",
             "fetch_timeout": "获取超时，请稍后再试",
-            "tag_single_only": "带标签搜索仅支持单图，已发送 1 张",
+            "tag_ignored": "多图已忽略标签，走本地缓存（更快）",
         }
         table = playful if style == "playful" else plain
         text = table.get(key, plain.get(key, ""))
@@ -627,11 +626,13 @@ class LoliconPlugin(Star):
             alias_map = parse_alias_map(self.config.get("tag_alias", ""))
             resolved_tags = resolve_tags(tags, alias_map)
 
-            # 带标签仅支持单图（库存随机补，无法预知标签，多图会很慢）
-            tag_capped = False
+            # 多图带标签时的处理方式（配置项 multi_tag_mode）
+            tag_ignored = False
             if resolved_tags and num > 1:
-                num = 1
-                tag_capped = True
+                mt_mode = self.config.get("multi_tag_mode", "ignore_tag")
+                if mt_mode != "fetch_by_tag":
+                    resolved_tags = []
+                    tag_ignored = True
 
             images = await self.image_manager.acquire_images(num, resolved_tags)
             if not images:
@@ -656,8 +657,8 @@ class LoliconPlugin(Star):
 
             if sent_count > 0:
                 asyncio.create_task(self.image_manager.check_and_refill_cache())
-                if tag_capped:
-                    result = event.plain_result(self._msg("tag_single_only"))
+                if tag_ignored:
+                    result = event.plain_result(self._msg("tag_ignored"))
                 else:
                     result = event.plain_result(f"{self._msg('sent')} x{sent_count}")
 
