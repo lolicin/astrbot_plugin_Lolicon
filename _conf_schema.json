@@ -10,7 +10,7 @@
     "description": "触发词列表",
     "type": "list",
     "default": ["色图", "涩图", "瑟图"],
-    "hint": "根据 match_mode 解释：exact 时作为完整短语；contains 时作为子串；regex 时每个元素作为正则模式"
+    "hint": "根据 match_mode 解释：exact 时作为完整短语；contains 时作为子串；regex 时每个元素作为正则模式。触发后会从消息中解析数量（如\"来三份\"）和标签"
   },
   "reply_style": {
     "description": "回复风格",
@@ -29,8 +29,15 @@
     "description": "图片数据源",
     "type": "string",
     "default": "lolicon",
-    "options": ["lolicon", "nyan"],
-    "hint": "lolicon=Lolicon API（api.lolicon.app，支持标签/宽高比/AI 排除等筛选）；nyan=sex.nyan.run API（直接返回图片二进制）"
+    "options": ["lolicon", "nyan", "all"],
+    "hint": "lolicon=Lolicon API（支持标签/宽高比/AI 排除筛选）；nyan=sex.nyan.run API（直接返回图片二进制）；all=多源降级（按 provider_strategy 策略在 lolicon/nyan 间故障转移）"
+  },
+  "provider_strategy": {
+    "description": "多源降级策略",
+    "type": "string",
+    "default": "failover",
+    "options": ["failover", "random", "round_robin"],
+    "hint": "仅 data_source=all 时生效。failover=按序故障转移（失败试下一个）；random=随机选择；round_robin=轮询"
   },
   "exclude_ai": {
     "description": "排除 AI 生成图",
@@ -44,6 +51,24 @@
     "default": "gt1",
     "options": ["", "gt1", "lt1", "eq1"],
     "hint": "仅 lolicon 数据源生效。留空(空字符串)=不筛选；gt1=横图；lt1=竖图；eq1=方图"
+  },
+  "max_count": {
+    "description": "单次最大图片数",
+    "type": "int",
+    "default": 5,
+    "hint": "单次请求最多返回的图片数量（1-10），超过会提示。支持中文数字（来三份=3）"
+  },
+  "max_image_bytes": {
+    "description": "图片压缩阈值（字节）",
+    "type": "int",
+    "default": 10485760,
+    "hint": "图片字节数超过此值则自动压缩（质量+尺寸阶梯），防 OneBot 单帧超限。0=不压缩。默认 10MB。需安装 Pillow 才生效，未装则原样发送"
+  },
+  "tag_alias": {
+    "description": "标签别名映射",
+    "type": "text",
+    "default": "",
+    "hint": "中文标签到 API 标签的映射，逗号或换行分隔，格式：白丝=white_pantyhose,萝莉=loli。仅 lolicon 数据源生效"
   },
   "cache_size": {
     "description": "缓存池目标数量",

@@ -1,5 +1,7 @@
 import os
 import re
+import io
+import time
 import uuid
 import asyncio
 import logging
@@ -18,6 +20,178 @@ logger = logging.getLogger(__name__)
 
 file_lock = asyncio.Lock()
 
+
+# ==================== 数量解析 ====================
+
+CHINESE_NUMS = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+# 匹配 "3份" "三张" "十个" 等
+COUNT_PATTERN = re.compile(r"([0-9]+|[一二三四五六七八九十]+)\s*(?:份|个|张|片)")
+
+
+def parse_count(count_str: str) -> int:
+    """解析数量字符串，支持中文数字。无效返回 -1。"""
+    if not count_str:
+        return 1
+    try:
+        return int(count_str)
+    except ValueError:
+        pass
+    if count_str in CHINESE_NUMS:
+        return CHINESE_NUMS[count_str]
+    if count_str.startswith("十"):
+        if len(count_str) == 1:
+            return 10
+        try:
+            return 10 + int(count_str[1])
+        except ValueError:
+            return 10
+    return -1
+
+
+def extract_count_and_tags(text: str, trigger_words: list) -> tuple:
+    """从消息文本提取数量字符串和标签列表。"""
+    cleaned = text
+    for w in trigger_words:
+        cleaned = cleaned.replace(w, " ")
+    count_str = ""
+    m = COUNT_PATTERN.search(cleaned)
+    if m:
+        count_str = m.group(1)
+        cleaned = cleaned.replace(m.group(0), " ")
+    # 去掉色/涩/瑟/图等无意义字
+    for ch in "色涩瑟图福利塞":
+        cleaned = cleaned.replace(ch, " ")
+    tags = [t.strip() for t in re.split(r"[\s,，、]+", cleaned) if t.strip()]
+    return count_str, tags
+
+
+def parse_alias_map(alias_str: str) -> dict:
+    """解析别名配置 '白丝=white_pantyhose,萝莉=loli'。"""
+    result = {}
+    if not alias_str:
+        return result
+    for pair in re.split(r"[,\n，]+", alias_str):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k and v:
+                result[k] = v
+    return result
+
+
+def resolve_tags(tags: list, alias_map: dict) -> list:
+    """标签别名映射。"""
+    return [alias_map.get(t, t) for t in tags if t]
+
+
+# ==================== 图片压缩 ====================
+
+_QUALITY_LADDER = (85, 70, 55, 40)
+_DIMENSION_LADDER = (2560, 1920, 1280)
+
+
+def _try_import_pil():
+    try:
+        from PIL import Image
+        return Image
+    except Exception:
+        return None
+
+
+def compress_image(data: bytes, max_bytes: int) -> bytes:
+    """压缩图片到 max_bytes 以内。Pillow 软依赖，不可用或失败返回原图。"""
+    if max_bytes <= 0 or len(data) <= max_bytes:
+        return data
+    pil = _try_import_pil()
+    if pil is None:
+        logger.debug("[compress] Pillow unavailable, keep original")
+        return data
+    try:
+        with pil.open(io.BytesIO(data)) as image:
+            image.load()
+            rgb = image.convert("RGB")
+    except Exception as exc:
+        logger.warning(f"[compress] decode failed: {exc}")
+        return data
+    best = data
+    orig_w, orig_h = rgb.size
+    for max_edge in (None, *_DIMENSION_LADDER):
+        candidate = rgb
+        if max_edge is not None:
+            longest = max(orig_w, orig_h)
+            if longest <= max_edge:
+                continue
+            scale = max_edge / longest
+            new_size = (max(1, int(orig_w * scale)), max(1, int(orig_h * scale)))
+            try:
+                candidate = rgb.resize(new_size, pil.LANCZOS)
+            except Exception:
+                continue
+        for quality in _QUALITY_LADDER:
+            try:
+                buf = io.BytesIO()
+                candidate.save(buf, format="JPEG", quality=quality, optimize=True)
+            except Exception:
+                continue
+            encoded = buf.getvalue()
+            if len(encoded) < len(best):
+                best = encoded
+            if len(encoded) <= max_bytes:
+                logger.debug(f"[compress] {len(data)} -> {len(encoded)} (q={quality}, edge={max_edge or 'orig'})")
+                return encoded
+    logger.debug(f"[compress] could not reach budget {max_bytes}, best={len(best)}")
+    return best
+
+
+async def compress_image_async(data: bytes, max_bytes: int) -> bytes:
+    return await asyncio.to_thread(compress_image, data, max_bytes)
+
+
+# ==================== 速率限制 ====================
+
+class RateLimiter:
+    """按用户加锁防并发刷，带 TTL 防泄漏。"""
+    MAX_LOCKS = 1000
+    LOCK_TTL = 120
+
+    def __init__(self):
+        self._locks: dict = {}
+        self._lock_times: dict = {}
+
+    async def acquire(self, user_id: str) -> bool:
+        lock = self._locks.setdefault(user_id, asyncio.Lock())
+        if lock.locked():
+            t = self._lock_times.get(user_id, 0)
+            if time.monotonic() - t > self.LOCK_TTL:
+                try:
+                    lock.release()
+                except RuntimeError:
+                    pass
+        if lock.locked():
+            return False
+        await lock.acquire()
+        self._lock_times[user_id] = time.monotonic()
+        return True
+
+    async def release(self, user_id: str):
+        if user_id in self._locks:
+            self._locks[user_id].release()
+            self._lock_times.pop(user_id, None)
+        if len(self._locks) > self.MAX_LOCKS:
+            stale = [k for k, v in self._locks.items() if not v.locked()]
+            for k in stale[: len(stale) // 2]:
+                del self._locks[k]
+                self._lock_times.pop(k, None)
+
+
+_rate_limiter = RateLimiter()
+
+
+# ==================== 图片管理 ====================
 
 class ImageManager:
     def __init__(self, config: AstrBotConfig):
@@ -59,10 +233,6 @@ class ImageManager:
 
     async def get_image_count(self):
         return len(await self.get_image_list())
-
-    async def get_random_image(self):
-        images = await self.get_image_list()
-        return random.choice(images) if images else None
 
     async def delete_image(self, filename):
         async with file_lock:
@@ -111,27 +281,74 @@ class ImageManager:
                 return None
 
     async def download_one(self):
+        """下载一张图入库（缓存池用，无标签随机）。"""
         source = self.config.get("data_source", "lolicon")
+        if source == "all":
+            return await self._download_one_multi()
         if source == "nyan":
             return await self._download_one_nyan()
         return await self._download_one_lolicon()
 
-    async def _download_one_lolicon(self):
+    async def _download_one_multi(self):
+        """多 provider 降级：按策略试 lolicon 和 nyan。"""
+        strategy = self.config.get("provider_strategy", "failover")
+        fns = [self._download_one_lolicon, self._download_one_nyan]
+        if strategy == "random":
+            random.shuffle(fns)
+        for fn in fns:
+            try:
+                r = await fn()
+                if r:
+                    return r
+                logger.warning(f"provider {fn.__name__} returned none, trying next")
+            except Exception as e:
+                logger.warning(f"provider {fn.__name__} failed: {e}, trying next")
+        return None
+
+    async def _download_one_lolicon(self, tags=None, num=1):
+        r18 = int(self.config.get("r18", 0))
+        if r18 == 2:
+            r18 = 1 if random.random() > 0.5 else 0
         results = await fetch_setu_lolicon(
-            r18=int(self.config.get("r18", 0)),
-            tags=[[], []],
+            r18=r18,
+            num=num,
+            tags=[tags] if tags else [[], []],
             exclude_ai=self.config.get("exclude_ai", True),
             aspect_ratio=self.config.get("aspect_ratio", "gt1") or None,
-            num=1
         )
         if not results:
-            return None
+            return None if not tags else []
         item = results[0]
         filename = f"{item['pid']}_p{item['p']}.{item['ext']}"
         original_url = item["urls"].get("original")
         if not original_url:
-            return None
-        return await self.generate_and_save_image(original_url, filename)
+            return None if not tags else []
+        saved = await self.generate_and_save_image(original_url, filename)
+        return saved
+
+    async def download_with_tags(self, num: int, tags: list):
+        """带标签实时下载多张（lolicon）。返回文件路径列表。"""
+        images = []
+        r18 = int(self.config.get("r18", 0))
+        if r18 == 2:
+            r18 = 1 if random.random() > 0.5 else 0
+        results = await fetch_setu_lolicon(
+            r18=r18,
+            num=max(1, min(20, num)),
+            tags=[tags] if tags else [[], []],
+            exclude_ai=self.config.get("exclude_ai", True),
+            aspect_ratio=self.config.get("aspect_ratio", "gt1") or None,
+        )
+        if not results:
+            return images
+        for item in results:
+            filename = f"{item['pid']}_p{item['p']}.{item['ext']}"
+            original_url = item["urls"].get("original")
+            if original_url:
+                saved = await self.generate_and_save_image(original_url, filename)
+                if saved:
+                    images.append(os.path.join(self.imgs_folder, saved))
+        return images
 
     async def _download_one_nyan(self):
         url = "https://sex.nyan.run/api/v2/img"
@@ -186,6 +403,37 @@ class ImageManager:
             return '.webp'
         return '.jpg'
 
+    async def acquire_images(self, num: int, tags: list):
+        """获取 num 张图片路径：有标签走 lolicon 实时下载，无标签走缓存+补。"""
+        if tags:
+            return await self.download_with_tags(num, tags)
+        images = []
+        cached = await self.get_image_list()
+        random.shuffle(cached)
+        for f in cached[:num]:
+            images.append(os.path.join(self.imgs_folder, f))
+        need = num - len(images)
+        for _ in range(need):
+            filename = await self.download_one()
+            if filename:
+                images.append(os.path.join(self.imgs_folder, filename))
+        return images
+
+    async def compress_file(self, path: str, max_bytes: int):
+        """读取文件、压缩、写回。"""
+        if max_bytes <= 0:
+            return
+        try:
+            async with aiofiles.open(path, 'rb') as f:
+                data = await f.read()
+            compressed = await compress_image_async(data, max_bytes)
+            if compressed != data and len(compressed) < len(data):
+                async with aiofiles.open(path, 'wb') as f:
+                    await f.write(compressed)
+                logger.info(f"Compressed {os.path.basename(path)}: {len(data)} -> {len(compressed)}")
+        except Exception as e:
+            logger.warning(f"compress failed: {e}")
+
     async def check_and_refill_cache(self):
         if self._refill_running:
             return
@@ -226,6 +474,8 @@ class ImageManager:
                 logger.error(f"Background cache error: {e}")
                 await asyncio.sleep(60)
 
+
+# ==================== API ====================
 
 async def fetch_setu_lolicon(
     r18: int = 0,
@@ -273,7 +523,7 @@ async def fetch_setu_lolicon(
 
 
 def match_trigger(text: str, mode: str, words: list) -> bool:
-    """根据匹配模式判断是否触发"""
+    """根据匹配模式判断是否触发。"""
     text = text.lower()
     if mode == "regex":
         return any(re.search(w, text) for w in words)
@@ -286,7 +536,7 @@ def match_trigger(text: str, mode: str, words: list) -> bool:
     "astrbot_plugin_lolicon",
     "lolicin",
     "我要涩涩增强版",
-    "2.0",
+    "2.1",
     "https://github.com/lolicin/astrbot_plugin_Lolicon"
 )
 class LoliconPlugin(Star):
@@ -297,23 +547,37 @@ class LoliconPlugin(Star):
         self.image_manager = ImageManager(config)
         asyncio.create_task(self._delayed_start_cache())
 
-    def _msg(self, key: str) -> str:
-        """根据 reply_style 返回对应文案"""
+    def _msg(self, key: str, **kwargs) -> str:
+        """根据 reply_style 返回对应文案，支持占位符。"""
         style = self.config.get("reply_style", "plain")
         playful = {
             "cache_empty": "不准涩涩",
             "sent": "色批给你好了",
             "send_fail": "信号不好没有找到涩涩",
             "error": "处理请求时发生错误，请联系管理员",
+            "invalid_count": "看不懂你要几张啦，输入 1 到 {max_count}",
+            "max_count_exceeded": "这么多你吃得消吗，最多 {max_count} 张",
+            "rate_limited": "急什么，等一下再试",
+            "fetch_timeout": "信号太差没找到涩涩",
         }
         plain = {
             "cache_empty": "库存为空，正在补货，请稍后再试",
             "sent": "给你涩图~",
             "send_fail": "图片发送失败",
             "error": "处理请求时发生错误",
+            "invalid_count": "数量无效，请输入 1 到 {max_count} 之间的数字",
+            "max_count_exceeded": "一次最多 {max_count} 张哦",
+            "rate_limited": "你太快啦，等一下再试",
+            "fetch_timeout": "获取超时，请稍后再试",
         }
         table = playful if style == "playful" else plain
-        return table.get(key, plain.get(key, ""))
+        text = table.get(key, plain.get(key, ""))
+        if kwargs:
+            try:
+                return text.format(**kwargs)
+            except Exception:
+                return text
+        return text
 
     async def _delayed_start_cache(self):
         await asyncio.sleep(5)
@@ -327,51 +591,74 @@ class LoliconPlugin(Star):
             mode = self.config.get("match_mode", "contains")
             words = self.config.get("trigger_words", ["色图", "涩图", "瑟图"])
             if match_trigger(text, mode, words):
-                return await self.handle_image_request(event)
+                count_str, tags = extract_count_and_tags(text, words)
+                return await self.handle_image_request(event, count_str, tags)
         except Exception as e:
             logger.error(f"Message handler error: {e}")
             return event.plain_result(f"插件异常: {e}")
 
-    async def handle_image_request(self, event):
-        filename = None
+    async def handle_image_request(self, event, count_str: str, tags: list):
+        user_id = "default"
+        try:
+            user_id = event.get_sender_id()
+        except Exception:
+            pass
+
+        if not await _rate_limiter.acquire(user_id):
+            return event.plain_result(self._msg("rate_limited"))
+
+        sent_basenames = []
         result = None
         try:
-            filename = await self.image_manager.get_random_image()
+            max_count = int(self.config.get("max_count", 5))
+            num = parse_count(count_str)
+            if num == -1:
+                num = 1
+                if count_str:
+                    tags = tags + [count_str]
+            if num < 1:
+                return event.plain_result(self._msg("invalid_count", max_count=max_count))
+            if num > max_count:
+                return event.plain_result(self._msg("max_count_exceeded", max_count=max_count))
 
-            if not filename:
+            alias_map = parse_alias_map(self.config.get("tag_alias", ""))
+            resolved_tags = resolve_tags(tags, alias_map)
+
+            images = await self.image_manager.acquire_images(num, resolved_tags)
+            if not images:
                 asyncio.create_task(self.image_manager.check_and_refill_cache())
                 return event.plain_result(self._msg("cache_empty"))
 
-            image_path = os.path.join(self.image_manager.imgs_folder, filename)
+            max_bytes = int(self.config.get("max_image_bytes", 0))
+            sent_count = 0
+            for img_path in images:
+                try:
+                    if max_bytes > 0:
+                        await self.image_manager.compress_file(img_path, max_bytes)
+                    await event.send(event.make_result().file_image(img_path))
+                    sent_basenames.append(os.path.basename(img_path))
+                    sent_count += 1
+                except asyncio.TimeoutError:
+                    logger.warning("send timeout")
+                    result = event.plain_result(self._msg("fetch_timeout"))
+                    break
+                except Exception as e:
+                    logger.error(f"send image error: {e}")
 
-            if not await self.image_manager.validate_image(image_path):
-                await self.image_manager.delete_image(filename)
+            if sent_count > 0:
                 asyncio.create_task(self.image_manager.check_and_refill_cache())
-                return event.plain_result(self._msg("cache_empty"))
+                result = event.plain_result(f"{self._msg('sent')} x{sent_count}")
 
-            await event.send(event.make_result().file_image(image_path))
-
-            await asyncio.sleep(3)
-
-            current = await self.image_manager.get_image_count()
-            if current < self.image_manager.refill_threshold:
-                asyncio.create_task(self.image_manager.check_and_refill_cache())
-
-            name_without_ext = os.path.splitext(filename)[0]
-            pure_id = name_without_ext.split('_')[0]
-            result = event.plain_result(f"{self._msg('sent')} {pure_id}")
-
+        except asyncio.TimeoutError:
+            logger.warning("handle_image_request timeout")
+            result = event.plain_result(self._msg("fetch_timeout"))
         except Exception as e:
-            logger.error(f"send image error: {e}")
-            if filename:
-                name_without_ext = os.path.splitext(filename)[0]
-                pure_id = name_without_ext.split('_')[0]
-                result = event.plain_result(f"{self._msg('send_fail')} {pure_id}")
-            else:
-                result = event.plain_result(self._msg("send_fail"))
+            logger.error(f"handle_image_request failed: {e}")
+            result = event.plain_result(self._msg("error"))
         finally:
-            if filename:
-                await self.image_manager.delete_image(filename)
+            await _rate_limiter.release(user_id)
+            for bn in sent_basenames:
+                await self.image_manager.delete_image(bn)
 
         if result:
             return result
