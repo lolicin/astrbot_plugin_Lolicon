@@ -404,9 +404,10 @@ class ImageManager:
         return '.jpg'
 
     async def acquire_images(self, num: int, tags: list):
-        """获取 num 张图片路径：有标签走 lolicon 实时下载，无标签走缓存+补。"""
+        """获取图片路径：有标签走 lolicon 实时下载（仅单图），无标签走缓存+补。"""
         if tags:
-            return await self.download_with_tags(num, tags)
+            # 带标签仅支持单图实时下载（库存随机补，无法预知用户标签，多图会很慢）
+            return await self.download_with_tags(1, tags)
         images = []
         cached = await self.get_image_list()
         random.shuffle(cached)
@@ -559,6 +560,7 @@ class LoliconPlugin(Star):
             "max_count_exceeded": "这么多你吃得消吗，最多 {max_count} 张",
             "rate_limited": "急什么，等一下再试",
             "fetch_timeout": "信号太差没找到涩涩",
+            "tag_single_only": "带标签只能来一张哦",
         }
         plain = {
             "cache_empty": "库存为空，正在补货，请稍后再试",
@@ -569,6 +571,7 @@ class LoliconPlugin(Star):
             "max_count_exceeded": "一次最多 {max_count} 张哦",
             "rate_limited": "你太快啦，等一下再试",
             "fetch_timeout": "获取超时，请稍后再试",
+            "tag_single_only": "带标签搜索仅支持单图，已发送 1 张",
         }
         table = playful if style == "playful" else plain
         text = table.get(key, plain.get(key, ""))
@@ -624,6 +627,12 @@ class LoliconPlugin(Star):
             alias_map = parse_alias_map(self.config.get("tag_alias", ""))
             resolved_tags = resolve_tags(tags, alias_map)
 
+            # 带标签仅支持单图（库存随机补，无法预知标签，多图会很慢）
+            tag_capped = False
+            if resolved_tags and num > 1:
+                num = 1
+                tag_capped = True
+
             images = await self.image_manager.acquire_images(num, resolved_tags)
             if not images:
                 asyncio.create_task(self.image_manager.check_and_refill_cache())
@@ -647,7 +656,10 @@ class LoliconPlugin(Star):
 
             if sent_count > 0:
                 asyncio.create_task(self.image_manager.check_and_refill_cache())
-                result = event.plain_result(f"{self._msg('sent')} x{sent_count}")
+                if tag_capped:
+                    result = event.plain_result(self._msg("tag_single_only"))
+                else:
+                    result = event.plain_result(f"{self._msg('sent')} x{sent_count}")
 
         except asyncio.TimeoutError:
             logger.warning("handle_image_request timeout")
