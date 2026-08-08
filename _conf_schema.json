@@ -3,6 +3,7 @@
     "description": "触发词匹配方式",
     "type": "string",
     "default": "contains",
+    "options": ["exact", "contains", "regex"],
     "hint": "exact=完整短语匹配（原版行为，仅在消息等于触发词时响应，不易误触）；contains=子串匹配（消息包含触发词即响应，更宽松）；regex=正则表达式（每个触发词作为正则模式）"
   },
   "trigger_words": {
@@ -15,6 +16,7 @@
     "description": "回复风格",
     "type": "string",
     "default": "plain",
+    "options": ["plain", "playful"],
     "hint": "plain=功能性简洁回复；playful=俏皮回复（还原原版语气）"
   },
   "r18": {
@@ -27,6 +29,7 @@
     "description": "图片数据源",
     "type": "string",
     "default": "lolicon",
+    "options": ["lolicon", "nyan"],
     "hint": "lolicon=Lolicon API（api.lolicon.app，支持标签/宽高比/AI 排除等筛选）；nyan=sex.nyan.run API（直接返回图片二进制）"
   },
   "exclude_ai": {
@@ -39,7 +42,8 @@
     "description": "宽高比筛选",
     "type": "string",
     "default": "gt1",
-    "hint": "仅 lolicon 数据源生效。留空=不筛选；gt1=横图；lt1=竖图；eq1=方图"
+    "options": ["", "gt1", "lt1", "eq1"],
+    "hint": "仅 lolicon 数据源生效。留空(空字符串)=不筛选；gt1=横图；lt1=竖图；eq1=方图"
   },
   "cache_size": {
     "description": "缓存池目标数量",
