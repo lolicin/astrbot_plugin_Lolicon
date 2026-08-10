@@ -69,6 +69,26 @@ def extract_count_and_tags(text: str, trigger_words: list) -> tuple:
     return count_str, tags
 
 
+# 缓存文件名形如 "{pid}_p{page}.{ext}"（lolicon 源）；nyan 源为随机 uuid 文件名，不含 pid
+PID_PATTERN = re.compile(r"^(\d+)_p\d+\.")
+
+
+def extract_pid(filename: str) -> Optional[str]:
+    """从缓存文件名解析 pid，无 pid 的来源返回 None。"""
+    m = PID_PATTERN.match(os.path.basename(filename))
+    return m.group(1) if m else None
+
+
+def collect_pids(filenames: list) -> list:
+    """按发送顺序提取 pid 并去重（同一作品的多页 pid 相同）。"""
+    pids = []
+    for name in filenames:
+        pid = extract_pid(name)
+        if pid and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
 def parse_alias_map(alias_str: str) -> dict:
     """解析别名配置 '白丝=white_pantyhose,萝莉=loli'。"""
     result = {}
@@ -581,6 +601,18 @@ class LoliconPlugin(Star):
                 return text
         return text
 
+    def _with_pids(self, text: str, filenames: list) -> str:
+        """按配置在回复文本后附加 pid（多图逗号分隔）。"""
+        if not bool(self.config.get("show_pid", False)):
+            return text
+        pids = collect_pids(filenames)
+        if not pids:
+            return text
+        label = self.config.get("pid_label", "PID: ")
+        joined = ",".join(pids)
+        sep = "\n" if bool(self.config.get("pid_newline", True)) else " "
+        return f"{text}{sep}{label}{joined}"
+
     async def _delayed_start_cache(self):
         await asyncio.sleep(5)
         await self.image_manager.check_and_refill_cache()
@@ -658,9 +690,10 @@ class LoliconPlugin(Star):
             if sent_count > 0:
                 asyncio.create_task(self.image_manager.check_and_refill_cache())
                 if tag_ignored:
-                    result = event.plain_result(self._msg("tag_ignored"))
+                    text = self._msg("tag_ignored")
                 else:
-                    result = event.plain_result(f"{self._msg('sent')} x{sent_count}")
+                    text = f"{self._msg('sent')} x{sent_count}"
+                result = event.plain_result(self._with_pids(text, sent_basenames))
 
         except asyncio.TimeoutError:
             logger.warning("handle_image_request timeout")

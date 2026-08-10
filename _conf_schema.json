@@ -77,6 +77,24 @@
     "default": "",
     "hint": "中文标签到 API 标签的映射，逗号或换行分隔，格式：白丝=white_pantyhose,萝莉=loli。仅 lolicon 数据源生效"
   },
+  "show_pid": {
+    "description": "回复附带 PID",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后在回复文字末尾附加图片的 Pixiv PID，多图用英文逗号分隔（如 PID: 12345678,87654321）。仅 lolicon 数据源有 PID，nyan 源无 PID 不会附加"
+  },
+  "pid_label": {
+    "description": "PID 前缀文案",
+    "type": "string",
+    "default": "PID: ",
+    "hint": "仅 show_pid 开启时生效。PID 列表前的提示文字，可留空只显示数字"
+  },
+  "pid_newline": {
+    "description": "PID 另起一行",
+    "type": "bool",
+    "default": true,
+    "hint": "仅 show_pid 开启时生效。true=PID 换行显示；false=与回复文字同一行用空格分隔"
+  },
   "cache_size": {
     "description": "缓存池目标数量",
     "type": "int",

@@ -1,4 +1,4 @@
-# 我要涩涩增强版 (v2.1.0)
+# 我要涩涩增强版 (v2.1.2)
 
 一个对接 AstrBot 的涩图插件，基于 [Lolicon API](https://api.lolicon.app) 获取随机涩图，支持数量参数、标签搜索、本地缓存池、图片压缩、多数据源降级，全部参数 WebUI 可视化配置。
 
@@ -8,6 +8,7 @@
 
 - **数量参数**：支持"来三份"中文数字解析，`max_count` 配置单次上限
 - **标签搜索 + 别名**：从消息提取标签，`tag_alias` 配置中文→API 标签映射（如 `白丝=white_pantyhose`）
+- **PID 回显**：`show_pid` 开启后在回复文字后附带图片 Pixiv PID，多图逗号分隔，方便按图索源
 - **触发词匹配可配置**：完整短语 / 子串 / 正则三种模式
 - **本地图片缓存池**：预下载图片，请求时直接取缓存，响应快且降低 API 压力
 - **多数据源 + 降级**：lolicon / nyan / all（多源故障转移，按 failover/random/round_robin 策略）
@@ -47,6 +48,9 @@ git clone https://github.com/lolicin/astrbot_plugin_lolicon
 | `multi_tag_mode` | string | `ignore_tag` | 多图带标签时：`ignore_tag`(忽略标签走缓存)/`fetch_by_tag`(按标签实时下载) |
 | `max_image_bytes` | int | `10485760` | 图片压缩字节阈值，超过则压缩；0=不压缩；默认 10MB |
 | `tag_alias` | text | `""` | 标签别名映射，逗号或换行分隔，格式 `白丝=white_pantyhose` |
+| `show_pid` | bool | `false` | 回复文字末尾附带图片 PID，多图英文逗号分隔（仅 lolicon 源有 PID） |
+| `pid_label` | string | `"PID: "` | PID 列表前的提示文字，可留空只显示数字（仅 `show_pid` 开启时生效） |
+| `pid_newline` | bool | `true` | PID 是否另起一行，`false` 则与回复文字同行（仅 `show_pid` 开启时生效） |
 | `cache_size` | int | `10` | 缓存池目标数量 |
 | `refill_threshold` | int | `5` | 触发补充的阈值 |
 | `refill_interval` | int | `300` | 后台巡检间隔（秒） |
@@ -80,10 +84,23 @@ git clone https://github.com/lolicin/astrbot_plugin_lolicon
 机器人：[图片] 给你涩图~ x1
 ```
 
+开启 `show_pid` 后（默认 `pid_newline=true`，PID 换行显示）：
+
+```
+用户：色图
+机器人：[图片] 给你涩图~ x1
+        PID: 123456789
+
+用户：来三份色图
+机器人：[图片][图片][图片] 给你涩图~ x3
+        PID: 111111,222222,333333
+```
+
 - 数量支持中文数字（一二三...十、十三）和阿拉伯数字，量词支持 份/个/张/片
 - 标签按空格/逗号/顿号分隔，经 `tag_alias` 别名映射后传给 Lolicon API
 - **多图带标签的处理**（`multi_tag_mode` 配置）：`ignore_tag`=忽略标签走本地缓存（快，图可能不符标签）；`fetch_by_tag`=按标签实时下载多张（慢，图符合标签）。默认 `ignore_tag`
 - 无标签时从本地缓存取（快，支持多图）；单图带标签时实时按标签下载（精准）
+- **PID 回显**（`show_pid`）：PID 从缓存文件名 `{pid}_p{页码}.{扩展名}` 解析，仅 lolicon 数据源带 PID；`nyan` 源返回的是图片二进制、文件名为随机串，无 PID 可显示，此时回复不会附加任何 PID 文本。同一作品的多页（p0/p1）PID 相同，会自动去重；仅统计**实际发送成功**的图片。可用 `https://www.pixiv.net/artworks/<PID>` 查看原作
 - 若想还原原版"必须完整输入 我要涩涩 才触发"的行为：`match_mode=exact`、`trigger_words=["我要色色","我要色图","我要涩涩"]`、`reply_style=playful`
 
 ## 配置要求
